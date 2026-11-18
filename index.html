@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADU Concept Generator — Floor Plan in 3D</title>
+<style>
+  /* ---------- PAGE STYLE (how things look, not what they do) ---------- */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f4f1ec; color: #222; }
+  header { padding: 16px 18px 8px; }
+  h1 { font-size: 20px; }
+  .sub { font-size: 14px; color: #666; margin-top: 4px; }
+  /* The stage holds the 3D canvas AND the floating room-name labels on top of it. */
+  #stage { position: relative; width: 100%; height: 58vh; min-height: 320px; }
+  #viewer { width: 100%; height: 100%; display: block; touch-action: none; }
+  .room-label { font-size: 12px; line-height: 1.25; text-align: center; white-space: nowrap;
+                background: rgba(255,255,255,.85); padding: 3px 8px; border-radius: 8px;
+                color: #222; pointer-events: none; }
+  .room-label small { display: block; color: #666; font-size: 11px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 18px; }
+  button { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px;
+           border: 1px solid #c9c2b8; background: #fff; cursor: pointer; }
+  button.on { background: #2f5d50; color: #fff; border-color: #2f5d50; }
+  .numbers { padding: 6px 18px 10px; max-width: 640px; font-size: 14px; }
+  .numbers h2 { font-size: 16px; margin: 6px 0 8px; }
+  .stats { display: flex; gap: 28px; margin-bottom: 8px; }
+  .stats .big { display: block; font-size: 26px; font-weight: 600; }
+  .stats .label { font-size: 12px; color: #666; }
+  .inputs { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .inputs label { font-size: 12px; color: #555; display: flex; flex-direction: column; gap: 2px; }
+  .inputs input { font: inherit; width: 100px; padding: 6px 8px; border: 1px solid #c9c2b8; border-radius: 8px; background: #fff; }
+  .checks { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+  .checks li { padding-left: 24px; position: relative; line-height: 1.4; }
+  .checks li::before { position: absolute; left: 0; font-weight: 700; }
+  .checks .pass::before { content: "✓"; color: #2f7d4f; }
+  .checks .fail::before { content: "✗"; color: #b3261e; }
+  .checks .fail { color: #b3261e; }
+  .checks .info::before { content: "i"; color: #888; }
+  .checks .info { color: #666; }
+  .numbers .note { font-size: 12px; color: #777; margin-top: 6px; }
+  .generate { padding: 6px 18px; display: flex; flex-direction: column; gap: 6px; max-width: 640px; font-size: 14px; }
+  .generate textarea, .generate input { font: inherit; padding: 8px 10px; border: 1px solid #c9c2b8; border-radius: 8px; background: #fff; }
+  .generate .row { display: flex; gap: 8px; margin-top: 4px; }
+  .generate .note { font-size: 12px; color: #777; }
+  .generate .status { min-height: 20px; color: #2f5d50; }
+  .generate .status.error { color: #b3261e; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .lesson { padding: 6px 18px 28px; font-size: 14px; line-height: 1.5; }
+  .lesson h2 { font-size: 16px; margin: 14px 0 6px; }
+  .lesson ol { padding-left: 20px; }
+  .lesson li { margin-bottom: 6px; }
+  code { background: #e8e2d8; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+</style>
+
+<!-- An "import map" tells the browser where to download the Three.js library from. -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@anthropic-ai/sdk": "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.10.0/+esm"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1 id="title">ADU floor plan</h1>
+  <p class="sub" id="subtitle">Drag to rotate · pinch or scroll to zoom.</p>
+</header>
+
+<div id="stage"><canvas id="viewer"></canvas></div>
+
+<div class="controls">
+  <button id="spinBtn" class="on">Auto-spin</button>
+  <button id="cutBtn">Cutaway walls</button>
+  <button id="topBtn">Top view</button>
+</div>
+
+<section class="numbers">
+  <h2>Numbers &amp; zoning — <span id="cityName"></span></h2>
+  <div class="stats">
+    <div><span class="big" id="sqft">–</span><span class="label">sq ft</span></div>
+    <div><span class="big" id="cost">–</span><span class="label" id="costRange">rough build cost</span></div>
+  </div>
+  <div class="inputs">
+    <label>$ per sq ft <input id="perSqFt" type="number" min="0" step="10"></label>
+    <label>Lot width (ft) <input id="lotW" type="number" min="0" step="1" value="60"></label>
+    <label>Lot depth (ft) <input id="lotD" type="number" min="0" step="1" value="100"></label>
+  </div>
+  <ul id="checks" class="checks"></ul>
+  <p class="note" id="rulesNote"></p>
+</section>
+
+<section class="generate">
+  <label for="prompt"><b>Describe your ADU</b></label>
+  <textarea id="prompt" rows="2">2-bed ADU, 800 sq ft, big kitchen</textarea>
+  <label for="apiKey">Anthropic API key</label>
+  <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">
+  <p class="note">The key stays in this browser and goes only to Anthropic. Use your own key, on your own computer — don't put this page online with a key in it.</p>
+  <div class="row">
+    <button id="genBtn" class="on">Generate</button>
+    <button id="sampleBtn">Show sample plan</button>
+  </div>
+  <p id="status" class="status"></p>
+</section>
+
+<section class="lesson">
+  <h2>What's happening</h2>
+  <ol>
+    <li><b>plan.js</b> describes the house as data: rooms, walls, doors, windows.</li>
+    <li><b>index.html</b> reads that data and builds one <code>Mesh</code> per wall piece and per floor.</li>
+    <li>Change a number in <code>plan.js</code> (try a room's <code>w</code>, or a window's <code>offset</code>), save, refresh — the 3D house changes.</li>
+  </ol>
+</section>
+
+<!-- plan.js defines the PLAN object (the house data). -->
+<script src="plan.js"></script>
+<!-- generate.js asks Claude to design a plan (and checks the answer). -->
+<script src="generate.js"></script>
+<!-- rules.js holds the city rules (CITY_RULES) and the cost + zoning functions. -->
+<script src="rules.js"></script>
+
+<script type="module">
+// =====================================================================
+// STEP 0: Load the tools.
+// "THREE" is the 3D library. "OrbitControls" lets you drag to rotate.
+// "CSS2DRenderer" draws normal web text (our room names) floating in 3D.
+// =====================================================================
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// =====================================================================
+// STEP 1: The house DATA comes from plan.js (the PLAN object).
+// Everything below is drawn from it — no room sizes are typed in here.
+// The only things in this file are "looks": colors and standard sizes.
+// =====================================================================
+// "plan" is the house currently on screen. It starts as the sample from plan.js,
+// and gets replaced when Claude generates a new one.
+let plan = PLAN;
+let houseW = 0, houseD = 0;   // the house's overall size, filled in by buildHouse()
+
+// Floor color for each room type (hex colors, like on a website).
+const FLOOR_COLORS = {
+  living:   0xd1a574,  // warm wood
+  bedroom:  0x9db8d6,  // soft blue
+  bathroom: 0x8fc9c3,  // teal tile
+  hallway:  0xd9cfc0   // light beige
+};
+const DOOR_HEIGHT = 6.67;  // 6'8" — used for every door and doorway
+
+// =====================================================================
+// STEP 2: The SCENE (the empty 3D world) — with a soft background color.
+// =====================================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf4f1ec);
+
+// =====================================================================
+// STEP 3: The CAMERA — like placing a person with a phone camera.
+// =====================================================================
+const canvas = document.getElementById('viewer');
+const stage = document.getElementById('stage');
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 500);
+camera.position.set(28, 30, 42); // x (right), y (up), z (toward you)
+
+// =====================================================================
+// STEP 4: The RENDERERS — the painters.
+// One draws the 3D scene; the other draws the floating room names.
+// =====================================================================
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.domElement.style.cssText = 'position:absolute; top:0; left:0; pointer-events:none;';
+stage.appendChild(labelRenderer.domElement);
+
+// =====================================================================
+// STEP 5: LIGHTS — without light, everything is black.
+// =====================================================================
+scene.add(new THREE.HemisphereLight(0xffffff, 0xb8a990, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(20, 35, 15);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30 });
+scene.add(sun);
+
+// =====================================================================
+// STEP 6: OBJECTS.
+// =====================================================================
+
+// The ground around the house (a big flat green plane)
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.MeshStandardMaterial({ color: 0xa8b89a })
+);
+ground.rotation.x = -Math.PI / 2;   // planes start standing up; lay it flat
+ground.position.y = -0.21;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Everything that belongs to the house goes in one group, "house".
+// Inside it we use PLAN coordinates directly: plan x -> 3D x, plan y -> 3D z.
+// Then (in buildHouse) we slide the whole group so the house's center sits at (0,0,0).
+const house = new THREE.Group();
+scene.add(house);
+
+// --- FLOORS and ROOM NAMES: one of each per room in plan.rooms ---
+function buildFloors() {
+ plan.rooms.forEach(room => {
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(room.w, 0.2, room.h),
+    new THREE.MeshStandardMaterial({ color: FLOOR_COLORS[room.type] ?? 0xcccccc })
+  );
+  floor.position.set(room.x + room.w / 2, -0.1, room.y + room.h / 2); // box position = its center
+  floor.receiveShadow = true;
+  floor.userData.ownMaterial = true;   // so we can throw it away when the house is rebuilt
+  house.add(floor);
+
+  // The floating name: a normal HTML <div> pinned to a point in 3D.
+  const div = document.createElement('div');
+  div.className = 'room-label';
+  div.innerHTML = `${room.name}<small>${room.w * room.h} sq ft</small>`;
+  const label = new CSS2DObject(div);
+  label.position.set(room.x + room.w / 2, 5, room.y + room.h / 2); // 5 ft above the floor
+  house.add(label);
+ });
+}
+
+// --- WALLS ---
+// All wall pieces go into one group so the cutaway button can change them together.
+const walls = new THREE.Group();
+house.add(walls);
+const wallMaterial  = new THREE.MeshStandardMaterial({ color: 0xfaf7f2 });
+const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x9cc9e8, transparent: true, opacity: 0.45 });
+const doorMaterial  = new THREE.MeshStandardMaterial({ color: 0x8a6a4a });
+
+// Helper: make ONE box-shaped piece of a wall.
+//   wall         = the wall from plan.js
+//   from, to     = where the piece starts and ends ALONG the wall (feet from the wall's start)
+//   bottom, top  = how high it starts and ends
+//   thickness    = how thick the piece is (defaults to the wall's thickness)
+function addPiece(wall, from, to, bottom, top, material = wallMaterial, thickness = wall.thickness) {
+  const [x1, y1] = wall.from, [x2, y2] = wall.to;
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / length, uy = (y2 - y1) / length;  // direction the wall runs (e.g. 1,0 = rightwards)
+
+  const middle = (from + to) / 2;                          // center of this piece, along the wall
+  const cx = x1 + ux * middle, cy = y1 + uy * middle;      // ...as a point on the floor plan
+
+  const horizontal = uy === 0;                             // runs left-right? otherwise it runs up-down
+  const sizeX = horizontal ? to - from : thickness;
+  const sizeZ = horizontal ? thickness : to - from;
+  const height = top - bottom;
+
+  const piece = new THREE.Mesh(new THREE.BoxGeometry(sizeX, height, sizeZ), material);
+  piece.position.set(cx, bottom + height / 2, cy);         // plan y becomes 3D z
+  piece.castShadow = true;
+  piece.receiveShadow = true;
+  piece.userData.top = top;       // remember the original top and bottom
+  piece.userData.bottom = bottom; // (the "cutaway" button uses these)
+  walls.add(piece);
+}
+
+// Build every wall, cutting holes where its doors and windows are.
+function buildWalls() {
+ plan.walls.forEach(wall => {
+  const length = Math.hypot(wall.to[0] - wall.from[0], wall.to[1] - wall.from[1]);
+  const H = plan.wallHeight;
+
+  // Gather this wall's doors and windows into one list, sorted left to right along the wall.
+  const openings = [
+    ...plan.doors.filter(d => d.wall === wall.id).map(d => ({
+      ...d, kind: 'door', sill: 0, height: DOOR_HEIGHT })),
+    ...plan.windows.filter(w => w.wall === wall.id).map(w => ({ ...w, kind: 'window' }))
+  ].sort((a, b) => a.offset - b.offset);
+
+  // Walk along the wall. "cursor" is how far we've built so far.
+  // We start half a thickness early so wall corners overlap and leave no gap.
+  let cursor = -wall.thickness / 2;
+
+  openings.forEach(o => {
+    const start = o.offset, end = o.offset + o.width, top = o.sill + o.height;
+    if (start < cursor - 0.001 || end > length + 0.001) {
+      console.warn(`Opening on wall "${wall.id}" overlaps something or sticks out past the wall end.`);
+    }
+
+    if (start > cursor) addPiece(wall, cursor, start, 0, H);     // solid wall before the opening
+    if (o.sill > 0)     addPiece(wall, start, end, 0, o.sill);   // wall under a window
+    if (top < H)        addPiece(wall, start, end, top, H);      // wall above (the "header")
+
+    if (o.kind === 'window') {
+      addPiece(wall, start, end, o.sill, top, glassMaterial, 0.1);       // the glass
+    } else if (o.type === 'door') {
+      addPiece(wall, start, end, 0, o.height, doorMaterial, 0.15);       // the door slab
+    }
+    cursor = end;
+  });
+
+  // The last bit of solid wall (also half a thickness past the end, for the corner).
+  addPiece(wall, cursor, length + wall.thickness / 2, 0, H);
+ });
+}
+
+// =====================================================================
+// buildHouse: (re)draw the whole house from the current "plan".
+// Called once at the start, and again each time a new plan arrives.
+// =====================================================================
+function buildHouse() {
+  // 1. Throw away the old house (free its memory so repeated rebuilds don't pile up).
+  walls.children.slice().forEach(piece => { piece.geometry.dispose(); walls.remove(piece); });
+  house.children.slice().forEach(obj => {
+    if (obj === walls) return;
+    if (obj.isMesh) { obj.geometry.dispose(); if (obj.userData.ownMaterial) obj.material.dispose(); }
+    house.remove(obj);     // also removes a room label's HTML
+  });
+
+  // 2. The house's overall size and center, worked out from the rooms.
+  const minX = Math.min(...plan.rooms.map(r => r.x));
+  const minY = Math.min(...plan.rooms.map(r => r.y));
+  const maxX = Math.max(...plan.rooms.map(r => r.x + r.w));
+  const maxY = Math.max(...plan.rooms.map(r => r.y + r.h));
+  houseW = maxX - minX;
+  houseD = maxY - minY;
+  house.position.set(-(minX + houseW / 2), 0, -(minY + houseD / 2));
+
+  // 3. Page title + total square footage (added up from the rooms).
+  const totalSqFt = Math.round(plan.rooms.reduce((sum, r) => sum + r.w * r.h, 0));
+  document.getElementById('title').textContent = plan.name;
+  document.getElementById('subtitle').textContent =
+    `${plan.rooms.length} rooms · ${totalSqFt} sq ft · Drag to rotate · pinch or scroll to zoom.`;
+
+  // 4. Update the square footage, cost and zoning panel.
+  updateNumbers();
+
+  // 5. Draw it.
+  buildFloors();
+  buildWalls();
+  applyCutaway();
+
+  // 6. Move the camera back far enough to see a house of this size.
+  const k = Math.max(houseW, houseD);
+  camera.position.set(0.9 * k, 0.95 * k, 1.3 * k);
+  controls.target.set(0, 3, 0);
+}
+
+// =====================================================================
+// STEP 7: CONTROLS — lets you drag to orbit around the house.
+// =====================================================================
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 3, 0);     // look at a point 3 ft above the house center
+controls.enableDamping = true;    // smooth, slightly floaty movement
+controls.autoRotate = true;       // slowly spin on its own
+controls.autoRotateSpeed = 1.2;
+controls.maxPolarAngle = Math.PI / 2 - 0.05; // don't let the camera go under the ground
+
+// =====================================================================
+// STEP 8: BUTTONS — small bits of interactivity.
+// =====================================================================
+const spinBtn = document.getElementById('spinBtn');
+function setSpin(on) {
+  controls.autoRotate = on;
+  spinBtn.classList.toggle('on', on);
+}
+spinBtn.onclick = () => setSpin(!controls.autoRotate);
+
+// Cutaway: shrink every wall piece to 4 ft so you can see inside, like a dollhouse.
+const cutBtn = document.getElementById('cutBtn');
+let cutaway = false;
+// Applies the current cutaway setting to every wall piece
+// (also called after a rebuild, so a new house keeps the same setting).
+function applyCutaway() {
+  const limit = cutaway ? 4 : Infinity;
+  walls.children.forEach(piece => {
+    const bottom = piece.userData.bottom;
+    const top = Math.min(piece.userData.top, limit);
+    piece.visible = top > bottom;                     // pieces fully above 4 ft disappear
+    if (piece.visible) {
+      piece.scale.y = (top - bottom) / piece.geometry.parameters.height;
+      piece.position.y = bottom + (top - bottom) / 2;
+    }
+  });
+}
+cutBtn.onclick = () => {
+  cutaway = !cutaway;
+  cutBtn.classList.toggle('on', cutaway);
+  applyCutaway();
+};
+
+// Top view: camera straight above, like a floor plan. We pick the height so the
+// whole house fits on screen, whether the screen is wide (laptop) or tall (phone).
+document.getElementById('topBtn').onclick = () => {
+  const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const height = 1.35 * Math.max(houseD / 2 / t, houseW / 2 / (t * camera.aspect));
+  setSpin(false);                       // a spinning floor plan is hard to read
+  camera.position.set(0, height, 0.01);
+  controls.target.set(0, 0, 0);
+};
+
+// =====================================================================
+// STEP 8a: The NUMBERS panel — square feet, rough cost, zoning check.
+// All the math lives in rules.js; this just shows the results on the page.
+// =====================================================================
+const city = CITY_RULES.kirkland;          // later: let the user pick a city
+const perSqFtBox = document.getElementById('perSqFt');
+const lotWBox = document.getElementById('lotW');
+const lotDBox = document.getElementById('lotD');
+perSqFtBox.value = city.costPerSqFt;
+document.getElementById('cityName').textContent = city.name;
+document.getElementById('rulesNote').textContent =
+  `Rules summarized ${city.lastChecked} from a third-party source (${city.sources}) — not official. ` +
+  `Cost is a rough guess, not a bid. Confirm both with ${city.name}'s planning department and local builders.`;
+
+const money = n => '$' + (Math.round(n / 1000) * 1000).toLocaleString();
+
+function updateNumbers() {
+  const sqFt = Math.round(totalSqFt(plan));
+  const cost = estimateCost(sqFt, Number(perSqFtBox.value) || 0, city.costRange);
+  document.getElementById('sqft').textContent = sqFt.toLocaleString();
+  document.getElementById('cost').textContent = money(cost.mid);
+  document.getElementById('costRange').textContent = `rough build cost (${money(cost.low)} – ${money(cost.high)})`;
+
+  const lot = { w: Number(lotWBox.value), d: Number(lotDBox.value) };
+  const list = document.getElementById('checks');
+  list.innerHTML = '';
+  checkZoning(plan, city, lot).forEach(result => {
+    const li = document.createElement('li');
+    li.className = result.status;
+    li.textContent = result.text;
+    list.appendChild(li);
+  });
+}
+[perSqFtBox, lotWBox, lotDBox].forEach(box => box.addEventListener('input', updateNumbers));
+
+// =====================================================================
+// STEP 8b: The "describe your ADU" box — sends your sentence to Claude.
+// =====================================================================
+const promptBox = document.getElementById('prompt');
+const keyBox = document.getElementById('apiKey');
+const genBtn = document.getElementById('genBtn');
+const statusEl = document.getElementById('status');
+
+// Remember the API key in this browser only (never sent anywhere except Anthropic).
+try { keyBox.value = localStorage.getItem('anthropicKey') || ''; } catch (e) {}
+
+function setStatus(text, isError = false) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle('error', isError);
+}
+
+genBtn.onclick = async () => {
+  const apiKey = keyBox.value.trim();
+  const request = promptBox.value.trim();
+  if (!request) return setStatus('Describe the home you want first.', true);
+  if (!apiKey) return setStatus('Paste your Anthropic API key first.', true);
+  try { localStorage.setItem('anthropicKey', apiKey); } catch (e) {}
+
+  genBtn.disabled = true;
+  try {
+    const result = await generatePlan(request, apiKey, setStatus);   // from generate.js
+    plan = result.plan;
+    buildHouse();
+    setStatus(result.problems.length
+      ? 'Drew the plan, but it has issues: ' + result.problems.join(' ')
+      : `Done: "${plan.name}", ${plan.rooms.length} rooms, ${Math.round(plan.rooms.reduce((s, r) => s + r.w * r.h, 0))} sq ft. Drag to look around.`,
+      result.problems.length > 0);
+  } catch (err) {
+    console.error(err);
+    setStatus('Something went wrong: ' + (err.message || err), true);
+  } finally {
+    genBtn.disabled = false;
+  }
+};
+
+document.getElementById('sampleBtn').onclick = () => {
+  plan = PLAN;
+  buildHouse();
+  setStatus('Showing the sample plan from plan.js.');
+};
+
+// =====================================================================
+// STEP 9: Keep the drawing sharp when the screen size changes.
+// =====================================================================
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setSize(w, h, false);
+  labelRenderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+buildHouse();   // draw the sample house to start with
+
+// =====================================================================
+// STEP 10: The LOOP — redraw the scene every frame (~60x per second).
+// =====================================================================
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

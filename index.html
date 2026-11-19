@@ -57,8 +57,7 @@
 <script type="importmap">
 { "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-    "@anthropic-ai/sdk": "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.10.0/+esm"
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
 } }
 </script>
 </head>
@@ -94,9 +93,9 @@
 <section class="generate">
   <label for="prompt"><b>Describe your ADU</b></label>
   <textarea id="prompt" rows="2">2-bed ADU, 800 sq ft, big kitchen</textarea>
-  <label for="apiKey">Anthropic API key</label>
-  <input id="apiKey" type="password" placeholder="sk-ant-..." autocomplete="off">
-  <p class="note">The key stays in this browser and goes only to Anthropic. Use your own key, on your own computer — don't put this page online with a key in it.</p>
+  <label for="accessCode">Access code</label>
+  <input id="accessCode" type="password" placeholder="Ask the site owner for the code" autocomplete="off">
+  <p class="note">The AI runs on a server that costs money per request, so generating needs a code.</p>
   <div class="row">
     <button id="genBtn" class="on">Generate</button>
     <button id="sampleBtn">Show sample plan</button>
@@ -437,12 +436,12 @@ function updateNumbers() {
 // STEP 8b: The "describe your ADU" box — sends your sentence to Claude.
 // =====================================================================
 const promptBox = document.getElementById('prompt');
-const keyBox = document.getElementById('apiKey');
+const codeBox = document.getElementById('accessCode');
 const genBtn = document.getElementById('genBtn');
 const statusEl = document.getElementById('status');
 
-// Remember the API key in this browser only (never sent anywhere except Anthropic).
-try { keyBox.value = localStorage.getItem('anthropicKey') || ''; } catch (e) {}
+// Remember the access code in this browser so you don't retype it.
+try { codeBox.value = localStorage.getItem('accessCode') || ''; } catch (e) {}
 
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
@@ -450,15 +449,15 @@ function setStatus(text, isError = false) {
 }
 
 genBtn.onclick = async () => {
-  const apiKey = keyBox.value.trim();
+  const accessCode = codeBox.value.trim();
   const request = promptBox.value.trim();
   if (!request) return setStatus('Describe the home you want first.', true);
-  if (!apiKey) return setStatus('Paste your Anthropic API key first.', true);
-  try { localStorage.setItem('anthropicKey', apiKey); } catch (e) {}
+  if (!accessCode) return setStatus('Enter the access code first.', true);
+  try { localStorage.setItem('accessCode', accessCode); } catch (e) {}
 
   genBtn.disabled = true;
   try {
-    const result = await generatePlan(request, apiKey, setStatus);   // from generate.js
+    const result = await generatePlan(request, accessCode, setStatus);   // from generate.js
     plan = result.plan;
     buildHouse();
     setStatus(result.problems.length

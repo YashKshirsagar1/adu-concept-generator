@@ -1,0 +1,8 @@
+{
+  "name": "adu-concept-generator",
+  "private": true,
+  "description": "Turn a prompt into a floor plan and a 3D ADU model.",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0"
+  }
+}

@@ -91,3 +91,6 @@ const PLAN = {
     { wall: "e", offset: 17, width: 3, sill: 3,   height: 4 }
   ]
 };
+
+// Lets the server function (api/generate.js) reuse this sample. In the browser "module" does not exist, so this line is skipped.
+if (typeof module !== "undefined") module.exports = PLAN;

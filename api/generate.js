@@ -20,6 +20,7 @@
 const crypto = require("crypto");
 const Anthropic = require("@anthropic-ai/sdk");
 const PLAN = require("../plan.js");      // the sample house, used as the format example
+const { validatePlan } = require("../validate.js");   // the shared plan checker
 
 const MODEL = "claude-opus-5-5";
 const MAX_PROMPT_LENGTH = 600;           // characters; keeps costs and abuse down
@@ -108,60 +109,6 @@ The example below shows the FORMAT only. Do NOT copy its layout, room sizes, or 
 
 EXAMPLE (format reference: an 800 sq ft 2-bed ADU):
 ${JSON.stringify(PLAN)}`;
-}
-
-// ---------------------------------------------------------------------
-// Our own double-check of the geometry. Returns a list of problems.
-// ---------------------------------------------------------------------
-function validatePlan(plan) {
-  const problems = [];
-  const wallLen = {};
-
-  if (!(plan.wallHeight >= 7 && plan.wallHeight <= 14)) problems.push("wallHeight should be between 7 and 14 ft.");
-  if (!plan.rooms.length) problems.push("There are no rooms.");
-
-  // Rooms: positive size, and no two rooms overlap.
-  plan.rooms.forEach(r => {
-    if (!(r.w > 0 && r.h > 0)) problems.push(`Room "${r.id}" has no size.`);
-  });
-  for (let i = 0; i < plan.rooms.length; i++) {
-    for (let j = i + 1; j < plan.rooms.length; j++) {
-      const a = plan.rooms[i], b = plan.rooms[j];
-      const overlapX = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
-      const overlapY = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
-      if (overlapX > 0.01 && overlapY > 0.01) problems.push(`Rooms "${a.id}" and "${b.id}" overlap.`);
-    }
-  }
-
-  // Walls: unique ids, and perfectly horizontal or vertical.
-  plan.walls.forEach(w => {
-    if (wallLen[w.id] !== undefined) problems.push(`Wall id "${w.id}" is used twice.`);
-    if (w.from.length !== 2 || w.to.length !== 2) { problems.push(`Wall "${w.id}" needs from and to as [x, y].`); return; }
-    const dx = w.to[0] - w.from[0], dy = w.to[1] - w.from[1];
-    if (dx !== 0 && dy !== 0) problems.push(`Wall "${w.id}" is diagonal; walls must be horizontal or vertical.`);
-    wallLen[w.id] = Math.hypot(dx, dy);
-    if (!(wallLen[w.id] > 0)) problems.push(`Wall "${w.id}" has zero length.`);
-  });
-
-  // Doors and windows: on a real wall, inside it, and not overlapping each other.
-  const openings = [
-    ...plan.doors.map(d => ({ ...d, label: "Door", top: 6.67 })),
-    ...plan.windows.map(w => ({ ...w, label: "Window", top: w.sill + w.height }))
-  ];
-  openings.forEach(o => {
-    const len = wallLen[o.wall];
-    if (len === undefined) { problems.push(`${o.label} refers to a wall "${o.wall}" that doesn't exist.`); return; }
-    if (o.offset < 0 || o.offset + o.width > len + 0.001)
-      problems.push(`${o.label} on wall "${o.wall}" (offset ${o.offset}, width ${o.width}) sticks out of the wall (length ${len}).`);
-    if (o.top > plan.wallHeight - 0.3) problems.push(`${o.label} on wall "${o.wall}" is too tall for the wall.`);
-  });
-  openings.forEach((a, i) => openings.slice(i + 1).forEach(b => {
-    if (a.wall === b.wall && Math.min(a.offset + a.width, b.offset + b.width) - Math.max(a.offset, b.offset) > 0.001)
-      problems.push(`Two openings overlap on wall "${a.wall}" (near offset ${Math.max(a.offset, b.offset)}).`);
-  }));
-
-  if (!plan.doors.length) problems.push("The plan has no doors.");
-  return problems;
 }
 
 // ---------------------------------------------------------------------

@@ -73,6 +73,7 @@
   <button id="spinBtn" class="on">Auto-spin</button>
   <button id="cutBtn">Cutaway walls</button>
   <button id="topBtn">Top view</button>
+  <button id="shareBtn">Copy share link</button>
 </div>
 
 <section class="numbers">
@@ -116,6 +117,9 @@
 <script src="plan.js"></script>
 <!-- generate.js asks Claude to design a plan (and checks the answer). -->
 <script src="generate.js"></script>
+<!-- validate.js checks plans are safe and sensible; share.js packs a plan into a share link. -->
+<script src="validate.js"></script>
+<script src="share.js"></script>
 <!-- rules.js holds the city rules (CITY_RULES) and the cost + zoning functions. -->
 <script src="rules.js"></script>
 
@@ -220,7 +224,11 @@ function buildFloors() {
   // The floating name: a normal HTML <div> pinned to a point in 3D.
   const div = document.createElement('div');
   div.className = 'room-label';
-  div.innerHTML = `${room.name}<small>${room.w * room.h} sq ft</small>`;
+  // Build the label with textContent (plain text) — NOT innerHTML — so a room name can never inject HTML.
+  div.textContent = room.name;
+  const area = document.createElement('small');
+  area.textContent = `${room.w * room.h} sq ft`;
+  div.appendChild(area);
   const label = new CSS2DObject(div);
   label.position.set(room.x + room.w / 2, 5, room.y + room.h / 2); // 5 ft above the floor
   house.add(label);
@@ -459,6 +467,7 @@ genBtn.onclick = async () => {
   try {
     const result = await generatePlan(request, accessCode, setStatus);   // from generate.js
     plan = result.plan;
+    history.replaceState(null, '', location.pathname);   // drop any old share link from the address bar
     buildHouse();
     setStatus(result.problems.length
       ? 'Drew the plan, but it has issues: ' + result.problems.join(' ')
@@ -474,9 +483,48 @@ genBtn.onclick = async () => {
 
 document.getElementById('sampleBtn').onclick = () => {
   plan = PLAN;
+  history.replaceState(null, '', location.pathname);   // the link no longer points at an old design
   buildHouse();
   setStatus('Showing the sample plan from plan.js.');
 };
+
+// =====================================================================
+// STEP 8c: SHARE LINKS — the design is packed into the address after the "#".
+// =====================================================================
+const shareBtn = document.getElementById('shareBtn');
+shareBtn.onclick = async () => {
+  try {
+    const link = location.origin + location.pathname + '#d=' + await encodePlan(plan);   // from share.js
+    history.replaceState(null, '', link);              // also shows it in the address bar
+    await navigator.clipboard.writeText(link);
+    shareBtn.textContent = 'Link copied ✓';
+  } catch (err) {
+    console.error(err);
+    shareBtn.textContent = 'Copy failed — copy the address bar';
+  }
+  setTimeout(() => { shareBtn.textContent = 'Copy share link'; }, 2500);
+};
+
+// If the page was opened with a share link, load that design.
+// The plan comes from the address, so we treat it as UNTRUSTED: check it before drawing.
+async function loadSharedPlan() {
+  const match = location.hash.match(/^#d=([A-Za-z0-9_-]+)$/);
+  if (!match) return false;
+  try {
+    const shared = await decodePlan(match[1]);          // from share.js
+    const problems = validatePlan(shared);              // from validate.js
+    if (problems.length) throw new Error(problems.slice(0, 3).join(' '));
+    plan = shared;
+    setStatus('Showing a shared design.');
+    return true;
+  } catch (err) {
+    console.warn('Bad share link:', err);
+    setStatus("That share link couldn't be opened (" + (err.message || 'invalid') + ').', true);
+    return false;
+  }
+}
+// Pasting a different share link into the same tab should update the house too.
+window.addEventListener('hashchange', async () => { if (await loadSharedPlan()) buildHouse(); });
 
 // =====================================================================
 // STEP 9: Keep the drawing sharp when the screen size changes.
@@ -490,7 +538,8 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
-buildHouse();   // draw the sample house to start with
+await loadSharedPlan();   // if the address holds a share link, use that design...
+buildHouse();             // ...otherwise draw the sample house
 
 // =====================================================================
 // STEP 10: The LOOP — redraw the scene every frame (~60x per second).

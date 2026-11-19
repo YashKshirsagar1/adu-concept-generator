@@ -39,6 +39,24 @@
   .checks .info::before { content: "i"; color: #888; }
   .checks .info { color: #666; }
   .numbers .note { font-size: 12px; color: #777; margin-top: 6px; }
+  [hidden] { display: none !important; }
+  .account { padding: 6px 18px 10px; max-width: 640px; font-size: 14px; }
+  .account h2 { font-size: 16px; margin: 6px 0 8px; }
+  .account h3 { font-size: 14px; margin: 10px 0 2px; }
+  .account .stack { display: flex; flex-direction: column; gap: 6px; }
+  .account .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .account input[type=text], .account input[type=email], .account input[type=password] {
+    font: inherit; padding: 8px 10px; border: 1px solid #c9c2b8; border-radius: 8px; background: #fff; }
+  .account .row input { flex: 1; min-width: 160px; }
+  .account .status { min-height: 20px; margin-top: 6px; color: #2f5d50; }
+  .account .status.error { color: #b3261e; }
+  button.small { padding: 3px 10px; font-size: 12px; }
+  .designs { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+  .designs li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px;
+                background: #fff; border: 1px solid #e0d9cd; border-radius: 10px; }
+  .designs .dname { flex: 1; min-width: 120px; font-weight: 600; overflow-wrap: anywhere; }
+  .designs .ddate { font-size: 12px; color: #777; }
+  .designs label { font-size: 12px; color: #555; display: flex; align-items: center; gap: 4px; }
   .generate { padding: 6px 18px; display: flex; flex-direction: column; gap: 6px; max-width: 640px; font-size: 14px; }
   .generate textarea, .generate input { font: inherit; padding: 8px 10px; border: 1px solid #c9c2b8; border-radius: 8px; background: #fff; }
   .generate .row { display: flex; gap: 8px; margin-top: 4px; }
@@ -57,7 +75,8 @@
 <script type="importmap">
 { "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/+esm"
 } }
 </script>
 </head>
@@ -104,6 +123,33 @@
   <p id="status" class="status"></p>
 </section>
 
+<section class="account">
+  <h2>Account &amp; saved designs</h2>
+
+  <!-- Shown when nobody is logged in -->
+  <div id="loggedOut" class="stack">
+    <input id="authEmail" type="email" placeholder="Email" autocomplete="email">
+    <input id="authPassword" type="password" placeholder="Password (at least 6 characters)" autocomplete="current-password">
+    <div class="row">
+      <button id="loginBtn" class="on">Log in</button>
+      <button id="signupBtn">Sign up</button>
+    </div>
+  </div>
+
+  <!-- Shown when someone is logged in -->
+  <div id="loggedIn" class="stack" hidden>
+    <p>Signed in as <b id="userEmail"></b> <button id="logoutBtn" class="small">Log out</button></p>
+    <div class="row">
+      <input id="saveName" type="text" maxlength="80" placeholder="Design name">
+      <button id="saveBtn" class="on">Save this design</button>
+    </div>
+    <h3>My designs</h3>
+    <ul id="designList" class="designs"></ul>
+  </div>
+
+  <p id="authStatus" class="status"></p>
+</section>
+
 <section class="lesson">
   <h2>What's happening</h2>
   <ol>
@@ -120,6 +166,9 @@
 <!-- validate.js checks plans are safe and sensible; share.js packs a plan into a share link. -->
 <script src="validate.js"></script>
 <script src="share.js"></script>
+<!-- supabase-config.js = where our Supabase project lives; cloud.js = login + saved designs. -->
+<script src="supabase-config.js"></script>
+<script src="cloud.js"></script>
 <!-- rules.js holds the city rules (CITY_RULES) and the cost + zoning functions. -->
 <script src="rules.js"></script>
 
@@ -335,6 +384,7 @@ function buildHouse() {
   // 3. Page title + total square footage (added up from the rooms).
   const totalSqFt = Math.round(plan.rooms.reduce((sum, r) => sum + r.w * r.h, 0));
   document.getElementById('title').textContent = plan.name;
+  document.getElementById('saveName').placeholder = `Design name (default: ${plan.name})`;
   document.getElementById('subtitle').textContent =
     `${plan.rooms.length} rooms · ${totalSqFt} sq ft · Drag to rotate · pinch or scroll to zoom.`;
 
@@ -508,6 +558,11 @@ shareBtn.onclick = async () => {
 // If the page was opened with a share link, load that design.
 // The plan comes from the address, so we treat it as UNTRUSTED: check it before drawing.
 async function loadSharedPlan() {
+  // A link like  /?d=<id>  points at a design saved in the cloud (it works only if that design is public).
+  const savedId = new URLSearchParams(location.search).get('d');
+  if (savedId) return !!(await loadSavedDesign(savedId));
+
+  // A link like  /#d=<packed text>  carries the whole design inside the address.
   const match = location.hash.match(/^#d=([A-Za-z0-9_-]+)$/);
   if (!match) return false;
   try {
@@ -525,6 +580,153 @@ async function loadSharedPlan() {
 }
 // Pasting a different share link into the same tab should update the house too.
 window.addEventListener('hashchange', async () => { if (await loadSharedPlan()) buildHouse(); });
+
+// =====================================================================
+// STEP 8d: ACCOUNT — log in, save designs, open them again, share them.
+// The Supabase calls live in cloud.js. Here we only wire them to the page.
+// =====================================================================
+const $ = id => document.getElementById(id);
+const authStatusEl = $('authStatus');
+function setAuthStatus(text, isError = false) {
+  authStatusEl.textContent = text;
+  authStatusEl.classList.toggle('error', isError);
+}
+
+// Load one saved design (yours, or anyone's PUBLIC one) and make it the current plan.
+// Plans from the database are treated as UNTRUSTED, same as share links: check before drawing.
+async function loadSavedDesign(id) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) { setStatus("That design link isn't valid.", true); return null; }
+  try {
+    const design = await cloudLoadDesign(id);
+    if (!design) throw new Error("it doesn't exist, or it's private");
+    const problems = validatePlan(design.plan);
+    if (problems.length) throw new Error(problems.slice(0, 3).join(' '));
+    plan = design.plan;
+    setStatus(`Showing the design "${design.name}".`);
+    return design;
+  } catch (err) {
+    console.warn('Could not open saved design:', err);
+    setStatus("That design couldn't be opened (" + (err.message || 'unknown error') + ').', true);
+    return null;
+  }
+}
+
+// Show the login boxes or the "my designs" area, depending on who is logged in.
+async function refreshAccount(user) {
+  $('loggedOut').hidden = !!user;
+  $('loggedIn').hidden = !user;
+  if (user) {
+    $('userEmail').textContent = user.email;
+    await renderDesigns();
+  }
+}
+
+// Draw the "My designs" list.
+async function renderDesigns() {
+  const list = $('designList');
+  list.textContent = '';
+  let designs;
+  try { designs = await cloudListDesigns(); }
+  catch (err) { return setAuthStatus('Could not load your designs: ' + err.message, true); }
+
+  if (!designs.length) {
+    const empty = document.createElement('li');
+    empty.textContent = 'Nothing saved yet. Generate a house, then press "Save this design".';
+    list.appendChild(empty);
+  }
+  designs.forEach(d => list.appendChild(designRow(d)));
+}
+
+// One row in the list. Names are set with textContent so they can never inject HTML.
+function designRow(d) {
+  const li = document.createElement('li');
+  const addButton = (label, onClick) => {
+    const b = document.createElement('button');
+    b.className = 'small'; b.textContent = label; b.onclick = onClick;
+    li.appendChild(b); return b;
+  };
+
+  const name = document.createElement('span');
+  name.className = 'dname'; name.textContent = d.name;
+  const date = document.createElement('span');
+  date.className = 'ddate'; date.textContent = new Date(d.updated_at).toLocaleDateString();
+  li.append(name, date);
+
+  addButton('Open', async () => {
+    const design = await loadSavedDesign(d.id);
+    if (!design) return;
+    history.replaceState(null, '', location.pathname);   // drop any old share link from the address bar
+    buildHouse();
+    setAuthStatus(`Opened "${design.name}".`);
+    stage.scrollIntoView({ behavior: 'smooth' });
+  });
+
+  // "Public" = anyone with the link can view it (they can't change it).
+  const label = document.createElement('label');
+  const box = document.createElement('input');
+  box.type = 'checkbox'; box.checked = d.is_public;
+  box.onchange = async () => {
+    try { await cloudSetPublic(d.id, box.checked); await renderDesigns(); }
+    catch (err) { box.checked = !box.checked; setAuthStatus('Could not change sharing: ' + err.message, true); }
+  };
+  label.append(box, 'Public');
+  li.appendChild(label);
+
+  if (d.is_public) {
+    addButton('Copy link', async () => {
+      try {
+        await navigator.clipboard.writeText(`${location.origin}${location.pathname}?d=${d.id}`);
+        setAuthStatus('Link copied. Anyone with it can view this design.');
+      } catch (err) { setAuthStatus('Could not copy the link.', true); }
+    });
+  }
+
+  addButton('Delete', async () => {
+    if (!confirm(`Delete "${d.name}"? This can't be undone.`)) return;
+    try { await cloudDeleteDesign(d.id); setAuthStatus(`Deleted "${d.name}".`); await renderDesigns(); }
+    catch (err) { setAuthStatus('Could not delete: ' + err.message, true); }
+  });
+  return li;
+}
+
+// Run an account action with the buttons disabled, and show any error.
+async function authAction(button, action) {
+  const email = $('authEmail').value.trim(), password = $('authPassword').value;
+  if (!email || !password) return setAuthStatus('Enter your email and a password.', true);
+  button.disabled = true;
+  try { await action(email, password); $('authPassword').value = ''; }
+  catch (err) { setAuthStatus(err.message, true); }
+  finally { button.disabled = false; }
+}
+$('loginBtn').onclick = () => authAction($('loginBtn'), async (email, password) => {
+  await cloudSignIn(email, password);
+  setAuthStatus('Logged in.');
+});
+$('signupBtn').onclick = () => authAction($('signupBtn'), async (email, password) => {
+  const result = await cloudSignUp(email, password);
+  setAuthStatus(result.needsEmailConfirmation ? 'Check your email to confirm your account.' : 'Account created. You are logged in.');
+});
+$('logoutBtn').onclick = async () => {
+  try { await cloudSignOut(); setAuthStatus('Logged out.'); }
+  catch (err) { setAuthStatus(err.message, true); }
+};
+
+$('saveBtn').onclick = async () => {
+  const name = ($('saveName').value.trim() || plan.name).slice(0, 80);
+  $('saveBtn').disabled = true;
+  try {
+    await cloudSaveDesign(name, plan);
+    $('saveName').value = '';
+    setAuthStatus(`Saved "${name}".`);
+    await renderDesigns();
+  } catch (err) { setAuthStatus('Could not save: ' + err.message, true); }
+  finally { $('saveBtn').disabled = false; }
+};
+
+// Start watching the login state. (The setTimeout is deliberate: Supabase can freeze if we
+// call it again from inside its own login callback, so we step out of the callback first.)
+cloudOnAuthChange(user => setTimeout(() => refreshAccount(user), 0))
+  .catch(err => { console.warn(err); setAuthStatus('Login is unavailable right now.', true); });
 
 // =====================================================================
 // STEP 9: Keep the drawing sharp when the screen size changes.
